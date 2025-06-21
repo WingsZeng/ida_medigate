@@ -2,7 +2,6 @@ import logging
 import random
 
 import ida_bytes
-import ida_enum
 import ida_funcs
 import ida_hexrays
 import ida_kernwin
@@ -426,13 +425,25 @@ def get_code_xrefs(ea):
         xref = ida_xref.get_next_cref_to(ea, xref)
 
 
-def get_enum_const_name(enum_name, const_val):
-    enum = ida_enum.get_enum(enum_name)
-    if enum != BADADDR:
-        const = ida_enum.get_const(enum, const_val, 0, BADADDR)
-        if const != BADADDR:
-            return ida_enum.get_const_name(const)
+def get_enum_const_by_value(enum_tinfo: ida_typeinf.tinfo_t, value, serial=0):
+    if not enum_tinfo or not enum_tinfo.is_enum():
+        return None
+    enum_data = ida_typeinf.enum_type_data_t()
+    if not enum_tinfo.get_enum_details(enum_data):
+        return None
+    for i, edm in enumerate(enum_data):
+        if edm.value == value and enum_data.get_serial(i) == serial:
+            return edm
     return None
+
+
+def get_enum_const_name(enum_name, const_val):
+    enum_tinfo = ida_typeinf.tinfo_t(name=enum_name)
+    if enum_tinfo:
+        edm_obj = get_enum_const_by_value(enum_tinfo, const_val)
+        if edm_obj:
+            return edm_obj.name
+        return None
 
 
 def find_hex_string(start_ea, stop_ea, hex_string):
