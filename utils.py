@@ -21,8 +21,9 @@ from idc import BADADDR
 # WORD length in bytes
 WORD_LEN = None
 NOT_UNION = 0
+BYTE_SIZE = 8
 
-def update_word_len(code, old=0):
+def update_word_len(_=None, old=0):
     global WORD_LEN
     if  ida_ida.inf_is_64bit():
         logging.debug("is 64 bit")
@@ -77,6 +78,12 @@ def get_drefs(ea: ida_idaapi.ea_t):
         xref = ida_xref.get_next_dref_to(ea, xref)
 
 
+def get_typeinf(typestr):
+    tif = ida_typeinf.tinfo_t()
+    tif.get_named_type(typestr)
+    return tif
+
+
 def get_typeinf_ptr(typeinf: str | ida_typeinf.tinfo_t | None):
     old_typeinf = typeinf
     if isinstance(typeinf, str):
@@ -114,9 +121,18 @@ def add_to_struct(
     is_offset=False,
     overwrite=False,
 ) -> tuple[int, ida_typeinf.udm_t] | None:
-    mt = None
+    logging.info(f"{struct=}, {member_name=}, {member_type=}, {offset=}, {is_offset=}, {overwrite=}")
+    mt = ida_nalt.opinfo_t()
+    if member_type is None:
+        member_type = ida_typeinf.tinfo_t(ida_typeinf.BT_INT)
+    if offset == BADADDR:
+        if struct.is_union():
+            offset = 0
+        else:
+            offset = struct.get_size() * BYTE_SIZE
+
+    mt.tid = member_type.get_tid()
     flag = ida_bytes.FF_DWORD
-    member_size = WORD_LEN
     if member_type is not None and (member_type.is_struct() or member_type.is_union()):
         logging.debug("Is struct!")
         substruct = extract_struct_from_tinfo(member_type)
@@ -125,10 +141,12 @@ def add_to_struct(
             mt = ida_nalt.opinfo_t()
             substruct_tid = substruct.get_tid()
             mt.tid = substruct_tid
+            member_type = ida_typeinf.tinfo_t(tid=substruct_tid)
             logging.debug(
                 f"Is struct: {ida_typeinf.get_tid_name(substruct_tid)}/{substruct_tid}"
             )
-            member_size = substruct.get_size()
+    elif member_type is not None and member_type.is_ptr():
+        member_type = member_type
     elif WORD_LEN == 4:
         flag = ida_bytes.FF_DWORD
     elif WORD_LEN == 8:
@@ -141,31 +159,37 @@ def add_to_struct(
         mt.ri = r
 
     new_member_name = member_name
-    member: ida_typeinf.udm_t = struct.get_udm_by_offset(offset)
+    index, member = struct.get_udm_by_offset(offset)
+    i = 0
     if overwrite and member:
         if member.name != member_name:
             logging.debug("Overwriting!")
-            ret_val = struct.rename_udm(offset, member_name)
-            while not ret_val:
+            ret_val = struct.rename_udm(index, member_name)
+            while ret_val != 0:
                 formatted_member_name = f"{member_name}_{i}"
                 i += 1
                 if i > 250:
-                    return None
-                ret_val = struct.rename_udm(offset, formatted_member_name)
+                    return -1, None
+                ret_val = struct.rename_udm(index, formatted_member_name)
+        if member.type != member_type:
+            struct.set_udm_type(index, member_type, flag)
 
     else:
-        ret_val = struct.add_udm(type=mt, offset=offset, etf_flags=flag)
+        formatted_member_name = member_name
+        if member:
+            logging.info(f"{formatted_member_name=}, {member_type=}, {offset=}, {flag=}, {member.name=}, {member.offset=}")
+        else:
+            logging.info(f"{formatted_member_name=}, {member_type=}, {offset=}, {flag=}")
+        ret_val = struct.add_udm(formatted_member_name, member_type, offset, flag)
         member: ida_typeinf.udm_t = struct.get_udm_by_offset(offset)
-        logging.debug("Overwriting!")
-        ret_val = struct.rename_udm(offset, member_name)
-        while not ret_val:
+        while ret_val != 0:
             formatted_member_name = f"{member_name}_{i}"
             i += 1
             if i > 250:
-                return None
+                return -1, None
             ret_val = struct.rename_udm(offset, formatted_member_name)
 
-    return struct.get_udm(name=new_member_name)
+    return struct.get_udm(new_member_name)
     
 
 
@@ -194,14 +218,14 @@ def deref_struct_from_tinfo(tinfo: ida_typeinf.tinfo_t):
 
 def extract_struct_from_tinfo(tinfo: ida_typeinf.tinfo_t):
     struct = tinfo
-    if struct is None:
+    if struct is None or struct.is_ptr():
         struct = deref_struct_from_tinfo(tinfo)
     return struct
 
 
 def get_member_tinfo(member: ida_typeinf.udm_t, member_typeinf: ida_typeinf.tinfo_t=None):
     if member_typeinf is None:
-        member_typeinf = idaapi.tinfo_t()
+        member_typeinf = ida_typeinf.tinfo_t()
     member_typeinf = member.type
     return member_typeinf
 
@@ -221,16 +245,14 @@ def get_sptr_by_name(struct_name: str):
 def get_member_substruct(member: ida_typeinf.udm_t) -> ida_typeinf.tinfo_t | None:
     member_type = get_member_tinfo(member)
     if member_type is not None and member_type.is_struct():
-        return member_type.get_type_name()
-    elif member.flag & ida_bytes.FF_STRUCT == ida_bytes.FF_STRUCT:
-        return get_sptr(member)
+        return member_type
     return None
 
 
 def set_member_name(struct: ida_typeinf.tinfo_t, offset: int, new_name: str):
     i = 0
     ret_val = struct.rename_udm(offset, new_name)
-    while not ret_val:
+    while ret_val != 0:
         formatted_new_name = f"{new_name}_{i}"
         i += 1
         if i > 250:
@@ -289,17 +311,17 @@ def expand_struct(struct_id: int, new_size: int):
             if x_struct is not None:
                 old_name: str = member.name
                 offset: int = member.offset
-                marker_name = "marker_{random.randint(0, 0xFFFFFF)}"
+                marker_name = f"marker_{random.randint(0, 0xFFFFFF)}"
                 x_struct.add_udm(
-                    name=marker_name,
-                    type=ida_typeinf.BTF_VOID,
-                    offset=member.soff + new_size,
-                    etf_flags=ida_bytes.FF_DATA | ida_bytes.FF_BYTE,
+                    marker_name,
+                    ida_typeinf.BTF_UINT8,
+                    member.offset + (BYTE_SIZE * new_size),
+                    ida_bytes.FF_DATA | ida_bytes.FF_BYTE,
                 )
                 logging.debug(
-                    "Delete member (0x%x-0x%x)", member.soff, member.soff + new_size - 1
+                    "Delete member (0x%x-0x%x)", member.offset, member.offset + BYTE_SIZE * (new_size - 1)
                 )
-                x_struct.del_udms(member.soff, member.soff + new_size)
+                x_struct.del_udms(member.offset, member.offset + (BYTE_SIZE * new_size))
                 fix_list.append(
                     [
                         x_struct.get_tid(),
@@ -312,21 +334,29 @@ def expand_struct(struct_id: int, new_size: int):
             else:
                 logging.warning("Xref wasn't struct_member 0x%x", xref.frm)
 
-    ret = add_to_struct(
-        struct, None, None, new_size - WORD_LEN
+    add_to_struct(
+        struct, "anonymous", None, (new_size - WORD_LEN) * BYTE_SIZE
     )
     logging.debug("Now fix args:")
     for fix_args in fix_list:
         x_struct = ida_typeinf.tinfo_t(tid=fix_args[0])
+        logging.info(
+            f"\nFixing struct {x_struct.get_type_name()} with arguments: \n"
+            f"\t name={fix_args[1]}\n"
+            f"\t type={fix_args[2]}\n"
+            f"\t offset={fix_args[3]}\n"
+            f"\t etf_flags={fix_args[4]}\n"
+        )
         ret = x_struct.add_udm(
-            name=fix_args[1],
-            type=ida_typeinf.tinfo_t(fix_args[2]),
-            offset=fix_args[3],
-            etf_flags=fix_args[4]
+            fix_args[1],
+            ida_typeinf.tinfo_t(tid=fix_args[2]),
+            fix_args[3],
+            fix_args[4]
         )
         logging.debug(f"{fix_args} = {ret}")
-        temp_udm_index, _ = x_struct.get_udm_by_offset(x_struct.get_size())
-        x_struct.del_udm(temp_udm_index)
+        temp_udm_index, _ = x_struct.get_udm_by_offset((x_struct.get_size() - 1) * BYTE_SIZE)
+        logging.info(f"{temp_udm_index=}")
+        x_struct.del_udm(temp_udm_index, ida_bytes.FF_DATA | ida_bytes.FF_BYTE)
 
 
 def get_curline_striped_from_viewer(viewer):
@@ -451,7 +481,7 @@ def force_make_struct(ea, struct_name):
         return False
     s_size = sptr.get_size()
     ida_bytes.del_items(ea, ida_bytes.DELIT_SIMPLE, s_size)
-    return ida_bytes.create_struct(ea, s_size, sptr.id)
+    return ida_bytes.create_struct(ea, s_size, sptr.get_tid())
 
 
 @batchmode
@@ -473,7 +503,7 @@ def add_struc_retry(name: str, max_attempts: int=100) -> tuple[(str | None), int
     type_info = ida_typeinf.tinfo_t()
     udt.is_union = NOT_UNION
     type_info.create_udt(udt)
-    while type_info.set_named_type(None, suggested_name) == ida_typeinf.TERR_OK:
+    while type_info.set_named_type(None, suggested_name) != ida_typeinf.TERR_OK:
         suggested_name = name + "_" + str(i)
         i += 1
         if i == max_attempts:
