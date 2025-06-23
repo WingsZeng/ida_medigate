@@ -52,7 +52,7 @@ class RTTIParser(object):
                         "_" + cls.RTTI_OBJ_STRUC_NAME
                     )
             if parent_updated_name is not None:
-                rtti_obj.updated_parents.append((parent_updated_name, offset * BYTE_SIZE))
+                rtti_obj.updated_parents.append((parent_updated_name, offset * utils.BYTE_SIZE))
 
         logging.debug("%s: Finish setup parents", rtti_obj.name)
         if not rtti_obj.create_structs():
