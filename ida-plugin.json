@@ -2,6 +2,6 @@
     "IDAMetadataDescriptorVersion": 1,
     "plugin": {
         "name": "ida_medigate",
-        "entryPoint": "plugins/medigate_cpp_plugin.py"
+        "entryPoint": "plugins/medigate_cpp_gui.py"
     }
 }
