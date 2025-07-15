@@ -36,7 +36,7 @@ def update_word_len(_=None, old=0):
 ida_idaapi.notify_when(ida_idaapi.NW_OPENIDB, update_word_len)
 
 
-def get_word(ea: ida_idaapi.ea_t):
+def get_word(ea):
     if WORD_LEN == 4:
         return ida_bytes.get_32bit(ea)
     elif WORD_LEN == 8:
@@ -44,11 +44,11 @@ def get_word(ea: ida_idaapi.ea_t):
     return None
 
 
-def get_ptr(ea: ida_idaapi.ea_t):
+def get_ptr(ea):
     return get_word(ea)
 
 
-def make_word(ea: ida_idaapi.ea_t):
+def make_word(ea):
     if WORD_LEN == 4:
         return ida_bytes.create_dword(ea, 4)
     elif WORD_LEN == 8:
@@ -56,11 +56,11 @@ def make_word(ea: ida_idaapi.ea_t):
     return None
 
 
-def make_ptr(ea: ida_idaapi.ea_t):
+def make_ptr(ea):
     return make_word(ea)
 
 
-def is_func(ea: ida_idaapi.ea_t):
+def is_func(ea):
     func: ida_funcs.func_t | None = ida_funcs.get_func(ea)
     if func is not None and func.start_ea == ea:
         return True
@@ -71,7 +71,7 @@ def get_funcs_list():
     pass
 
 
-def get_drefs(ea: ida_idaapi.ea_t):
+def get_drefs(ea):
     xref = ida_xref.get_first_dref_to(ea)
     while xref != BADADDR:
         yield xref
